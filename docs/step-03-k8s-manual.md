@@ -4,7 +4,7 @@
 
 You write every manifest yourself from the requirements and hints below. There is **no copy-paste YAML here** — figure out the fields. (If you get stuck, the reference answer is in `solved/step-03/`.)
 
-> **Set up:** create a `step-03/` working folder, copy the provided app into it (`cp -r movie-api step-03/app-src`) if you like to keep things together, and make a `step-03/k8s/` folder for the manifests below. You also need the image from Step 02 pushed to Docker Hub (`<dockerhub-user>/movie-api:1.0`).
+> **Set up:** make a `k8s/` folder at the repo root for the manifests below — you'll keep evolving this same folder through the later steps. You also need the image from Step 02 pushed to Docker Hub (`<dockerhub-user>/movie-api:1.0`).
 
 ---
 
