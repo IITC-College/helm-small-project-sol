@@ -32,95 +32,206 @@ There is **no copy-paste chart here** — you build it from the requirements and
 
 ## B. `values.yaml` — the knobs
 
-**Goal:** make everything that varied between environments a value.
+**Goal:** make every setting that varied between environments a *value* you can override later, instead of hard-coding it in a template.
 
-**Task:** define values for: `replicaCount`; an `image` block (`repository`, `tag`, `pullPolicy`); a `service` block (`type`, `port: 80`, `targetPort: 3000`); a `config` map containing `PORT: "3000"`; a `secret.mongoUri`; a `mongo` block (`enabled: true`, `image`, `storage`, `port`); and an `extraEnv` map (e.g. `LOG_LEVEL: info`).
+**What to define** — recreate this structure in `values.yaml`:
 
-*Hints:*
-- For `secret.mongoUri`, you want the Mongo host to depend on the release name. Put a Helm expression **inside the string**: `"mongodb://{{ .Release.Name }}-mongo:27017/movies"`. (You'll render it with `tpl` in the Secret template — see step F.)
-- `mongo.enabled` will gate the whole in-cluster Mongo via a conditional (step I/J).
+| Key | Purpose | Example |
+| --- | --- | --- |
+| `replicaCount` | how many app pods | `2` |
+| `image.repository` | image name | `<dockerhub-user>/movie-api` |
+| `image.tag` | image version | `"1.0"` |
+| `image.pullPolicy` | when to pull | `IfNotPresent` |
+| `service.type` | Service type | `ClusterIP` |
+| `service.port` | Service port | `80` |
+| `service.targetPort` | container port | `3000` |
+| `config.PORT` | app config → ConfigMap | `"3000"` |
+| `secret.mongoUri` | DB connection → Secret | see hint below |
+| `mongo.enabled` | toggle in-cluster Mongo | `true` |
+| `mongo.image` | Mongo image | `mongo:7` |
+| `mongo.storage` | PVC size | `1Gi` |
+| `mongo.port` | Mongo Service port | `27017` |
+| `extraEnv.LOG_LEVEL` | extra env vars → `env:` | `"info"` |
+
+**Two things need special handling:**
+- **`secret.mongoUri` should contain `{{ .Release.Name }}` *inside the string*** — e.g. a value like `"mongodb://{{ .Release.Name }}-mongo:27017/movies"`. This makes the Mongo host follow the release name (`demo-mongo`, `prod-mongo`, …). A normal `{{ .Values.secret.mongoUri }}` would print that template text literally, so in **step F** you re-render it with `tpl`.
+- **`mongo.enabled` is a switch.** In **steps I and J** it gates the entire in-cluster Mongo (Service + StatefulSet) behind an `{{- if }}` so the same chart works with either an in-cluster or an external database.
+
+*Reference answer: `solved/step-05/movie-chart/values.yaml`.*
 
 ## C. `values-prod.yaml` — an environment override
 
-**Task:** create a second values file with production overrides — e.g. `replicaCount: 4`, `service.type: LoadBalancer`, `extraEnv.LOG_LEVEL: warn`. Applied later with `-f`.
+**Goal:** a *partial* values file holding **only** what changes in production. You apply it on top of `values.yaml` with `-f` (step L); unspecified keys keep their base defaults because Helm deep-merges this file over `values.yaml`.
+
+**What to override** — just the production-specific keys, for example:
+- `replicaCount` → bump it (e.g. `4`)
+- `service.type` → `LoadBalancer`
+- `extraEnv.LOG_LEVEL` → `warn`
+
+Leave everything else out — do not re-list keys that don't change.
+
+*Reference answer: `solved/step-05/movie-chart/values-prod.yaml`.*
 
 ## D. `templates/_helpers.tpl` — named templates
 
-**Goal:** define reusable name/label snippets so every resource is named and labelled consistently.
+**Goal:** define reusable name/label snippets once, so every resource is named and labelled consistently. You call them from other templates with `include`.
 
-**Task:** define these named templates with `define`/`end`:
-- `movie-chart.name` — the chart name, allowing a `nameOverride`.
-- `movie-chart.fullname` — `<release>-<name>` (e.g. `demo-movie-chart`).
-- `movie-chart.labels` — common labels (`app.kubernetes.io/name`, `/instance`, `/managed-by`, `helm.sh/chart`).
-- `movie-chart.selectorLabels` — the **stable** subset used in selectors (name + instance only).
-- `movie-chart.mongoName` — `<release>-mongo`.
+**Define these five named templates** (each is a `{{- define "…" -}}` … `{{- end -}}` block):
+
+| Helper | Returns | Used for |
+| --- | --- | --- |
+| `movie-chart.name` | chart name, overridable via `nameOverride` | label values |
+| `movie-chart.fullname` | `<release>-<name>` (e.g. `demo-movie-chart`) | resource names |
+| `movie-chart.labels` | common labels (name, instance, managed-by, chart) | every resource's `metadata.labels` |
+| `movie-chart.selectorLabels` | the **stable** subset (name + instance only) | `selector` / `matchLabels` |
+| `movie-chart.mongoName` | `<release>-mongo` | the Mongo Service/StatefulSet name |
 
 *Hints:*
-- Use `printf` to build names, and pipe through `trunc 63 | trimSuffix "-"` to stay within k8s name limits.
-- **Never** put `helm.sh/chart` or a version label in `selectorLabels` — selectors are immutable, and a version bump would break upgrades.
-- Reference a helper elsewhere with `{{ include "movie-chart.fullname" . }}`.
+- Use `printf "%s-%s" ...` to build names, and pipe through `| trunc 63 | trimSuffix "-"` to stay within k8s name limits.
+- `movie-chart.name` should fall back to the chart name: `default .Chart.Name .Values.nameOverride`.
+- `movie-chart.labels` includes `helm.sh/chart` (built from `.Chart.Name` + `.Chart.Version`); `movie-chart.selectorLabels` must **not**.
+
+**Why `labels` and `selectorLabels` are split:** a Deployment's `selector` is **immutable** after creation. If you put `helm.sh/chart` (which includes the chart version) into the selector, the next `version` bump would change the selector and break the upgrade. So `selectorLabels` holds only the stable name+instance, and `labels` adds the rest on top.
+
+> From here on, every template references these helpers, e.g. `{{ include "movie-chart.fullname" . }}` for a name and `{{- include "movie-chart.labels" . | nindent 4 }}` for the label block. `nindent N` indents the rendered lines by N spaces so the YAML stays valid.
+
+*Reference answer: `solved/step-05/movie-chart/templates/_helpers.tpl`.*
 
 ## E. `templates/configmap.yaml`
 
-**Task:** render a ConfigMap named `{{ include "movie-chart.fullname" . }}-config`, with every key under `.Values.config` turned into a `data` entry.
+**Goal:** turn every key under `.Values.config` into a ConfigMap entry.
 
-*Hints:* iterate with `{{- range $key, $val := .Values.config }}` … `{{- end }}`, and `quote` the value. Add the common labels with `{{- include "movie-chart.labels" . | nindent 4 }}`.
+- Name it `{{ include "movie-chart.fullname" . }}-config`.
+- Add the common labels with `{{- include "movie-chart.labels" . | nindent 4 }}`.
+- Under `data:`, loop over `.Values.config` with `{{- range $key, $val := .Values.config }}` … `{{- end }}`, emitting `{{ $key }}: {{ $val | quote }}`.
+
+*Reference answer: `solved/step-05/movie-chart/templates/configmap.yaml`.*
 
 ## F. `templates/secret.yaml`
 
-**Task:** render an `Opaque` Secret named `...-secret` with `MONGO_URI` in `stringData`.
+**Goal:** an `Opaque` Secret named `...-secret` holding `MONGO_URI` under `stringData`.
 
-*Hint:* the value in `values.yaml` itself contains `{{ .Release.Name }}`, so a plain `{{ .Values.secret.mongoUri }}` would emit that text literally. Re-render it with `tpl`: `{{ tpl .Values.secret.mongoUri . | quote }}`.
+The catch (from step B): `secret.mongoUri` *itself* contains `{{ .Release.Name }}`. A plain `{{ .Values.secret.mongoUri }}` would emit that template text verbatim. Pass it through **`tpl`** to render the inner template against the current context — i.e. `tpl .Values.secret.mongoUri .`, then `| quote`.
+
+*Reference answer: `solved/step-05/movie-chart/templates/secret.yaml`.*
 
 ## G. `templates/deployment.yaml`
 
-**Task:** port your Step 03/04 Deployment to templated form.
+**Goal:** port your Step 03/04 Deployment to templated form.
 
-*Hints:*
-- Name: `{{ include "movie-chart.fullname" . }}`; `replicas: {{ .Values.replicaCount }}`.
-- `selector.matchLabels` and the pod template labels both use `{{ include "movie-chart.selectorLabels" . | nindent N }}` — mind the indentation (`nindent 6` under `matchLabels`, `nindent 8` under the template `metadata.labels`).
-- Image: `"{{ .Values.image.repository }}:{{ .Values.image.tag }}"`, `imagePullPolicy: {{ .Values.image.pullPolicy }}`, container port `{{ .Values.service.targetPort }}`.
-- Keep `envFrom` pointing at the templated ConfigMap and Secret names.
-- Render `extraEnv` only if present: wrap an `env:` block in `{{- with .Values.extraEnv }}` … `{{- end }}` and `range` over it.
-- Probes hit `/health` on `{{ .Values.service.targetPort }}`.
+Requirements:
+- **Name:** `{{ include "movie-chart.fullname" . }}` — **replicas:** `{{ .Values.replicaCount }}`.
+- **Labels/selectors:** `metadata.labels` uses `movie-chart.labels`; both `selector.matchLabels` and the pod-template `metadata.labels` use `movie-chart.selectorLabels`. Mind the indentation: `nindent 4` for the metadata labels, `nindent 6` under `matchLabels`, `nindent 8` under the pod template.
+- **Image:** `"{{ .Values.image.repository }}:{{ .Values.image.tag }}"`, `imagePullPolicy: {{ .Values.image.pullPolicy }}`, `containerPort: {{ .Values.service.targetPort }}`.
+- **`envFrom`:** point at the templated ConfigMap (`...-config`) and Secret (`...-secret`) names.
+- **`extraEnv`:** render the `env:` block only if the map is non-empty — wrap it in `{{- with .Values.extraEnv }}` … `{{- end }}` and `range` inside, emitting `name`/`value` per key.
+- **Probes:** liveness/readiness hit `/health` on `{{ .Values.service.targetPort }}`.
+
+*Reference answer: `solved/step-05/movie-chart/templates/deployment.yaml`.*
 
 ## H. `templates/service.yaml`
 
-**Task:** Service named `{{ include "movie-chart.fullname" . }}`, `type: {{ .Values.service.type }}`, selector = `selectorLabels`, `port: {{ .Values.service.port }}` → `targetPort: {{ .Values.service.targetPort }}`.
+**Goal:** the app Service.
+
+Requirements:
+- Name `{{ include "movie-chart.fullname" . }}`, common labels via `movie-chart.labels`.
+- `type: {{ .Values.service.type }}`.
+- `selector` = `movie-chart.selectorLabels` (`nindent 4`).
+- A single port mapping: `port: {{ .Values.service.port }}` → `targetPort: {{ .Values.service.targetPort }}`.
+
+*Reference answer: `solved/step-05/movie-chart/templates/service.yaml`.*
 
 ## I. `templates/mongo-service.yaml` (conditional)
 
-**Task:** the headless Mongo Service from Step 04, named `{{ include "movie-chart.mongoName" . }}`, **wrapped in a conditional** so it only renders when in-cluster Mongo is enabled.
+**Goal:** the headless Mongo Service from Step 04 — but it must only render when in-cluster Mongo is enabled.
 
-*Hint:* wrap the whole file in `{{- if .Values.mongo.enabled }}` … `{{- end }}`. Add a component label (`app.kubernetes.io/component: mongo`) to the labels and selector so it doesn't collide with the app's Service selector.
+Requirements:
+- Wrap the **entire file** in `{{- if .Values.mongo.enabled }}` … `{{- end }}`.
+- Name it `{{ include "movie-chart.mongoName" . }}`; make it headless (`clusterIP: None`).
+- Add `app.kubernetes.io/component: mongo` to **both** the labels and the selector, so this Service's selector doesn't collide with the app Service's selector (they'd otherwise share the same name+instance labels and grab each other's pods).
+- Port: `{{ .Values.mongo.port }}` → `targetPort: 27017`.
+
+*Reference answer: `solved/step-05/movie-chart/templates/mongo-service.yaml`.*
 
 ## J. `templates/mongo-statefulset.yaml` (conditional)
 
-**Task:** the Mongo StatefulSet from Step 04, templated and wrapped in the same `{{- if .Values.mongo.enabled }}` guard. Use `{{ .Values.mongo.image }}` and `{{ .Values.mongo.storage }}`.
+**Goal:** the Mongo StatefulSet from Step 04, templated and wrapped in the **same** `{{- if .Values.mongo.enabled }}` guard.
+
+Requirements:
+- Name and `serviceName` both = `{{ include "movie-chart.mongoName" . }}`; `replicas: 1`.
+- Same `app.kubernetes.io/component: mongo` label on metadata, selector, and pod template as in step I (same indentation rules as the Deployment).
+- Container image `{{ .Values.mongo.image }}`, container port `27017`, volume mount at `/data/db`.
+- A `volumeClaimTemplates` entry with `accessModes: ["ReadWriteOnce"]` and `storage: {{ .Values.mongo.storage }}`.
+
+*Reference answer: `solved/step-05/movie-chart/templates/mongo-statefulset.yaml`.*
 
 ## K. `templates/NOTES.txt`
 
-**Task:** print post-install help — the `port-forward` command (using the fullname helper and `.Values.service.port`), and a line that differs depending on `{{ if .Values.mongo.enabled }}`.
+**Goal:** post-install help, printed by Helm after `install`/`upgrade`.
+
+Requirements:
+- A `kubectl port-forward` line built from `{{ include "movie-chart.fullname" . }}` and `{{ .Values.service.port }}`.
+- A line that differs depending on `mongo.enabled` — use `{{- if .Values.mongo.enabled }}` / `{{- else }}` / `{{- end }}` (e.g. "in-cluster Mongo enabled" vs. "Mongo is external").
+
+*Reference answer: `solved/step-05/movie-chart/templates/NOTES.txt`.*
 
 ---
 
 ## L. The Helm workflow
 
-**Tasks (run and observe):**
-1. Lint the chart.
-2. Render templates locally **without installing** to inspect the output.
-3. Install the release as `demo`.
-4. Inspect the applied manifests and the pods.
-5. Upgrade with an inline override (e.g. bump `replicaCount`).
-6. Upgrade again using your `values-prod.yaml`.
-7. View release history, then roll back to revision 1.
-8. Uninstall.
+Run these from inside the chart directory (`movie-chart/`). Read the output after each — the point is to *see* what Helm does.
 
-*Hints (commands to discover):* `helm lint`, `helm template`, `helm install`, `helm get manifest`, `helm upgrade` (with `--set` and with `-f`), `helm history`, `helm rollback`, `helm uninstall`.
+**1. Lint** — catch template/values errors before installing:
+```bash
+helm lint .
+```
 
-> **Verify the conditional works:** render with `--set mongo.enabled=false` and confirm the Mongo Service/StatefulSet disappear from the output.
+**2. Render locally without installing** — inspect the generated YAML:
+```bash
+helm template demo .
+```
+
+**3. Install** the release as `demo`:
+```bash
+helm install demo .
+```
+
+**4. Inspect** what was applied and the running pods:
+```bash
+helm get manifest demo
+kubectl get pods,svc
+```
+
+**5. Upgrade with an inline override** (bump replicas without editing files):
+```bash
+helm upgrade demo . --set replicaCount=3
+```
+
+**6. Upgrade using the prod values file** (layered over `values.yaml`):
+```bash
+helm upgrade demo . -f values-prod.yaml
+```
+
+**7. History, then roll back** to the first revision:
+```bash
+helm history demo
+helm rollback demo 1
+```
+
+**8. Uninstall:**
+```bash
+helm uninstall demo
+```
+
+> **Verify the conditional works:** render with Mongo disabled and confirm the Mongo Service *and* StatefulSet vanish from the output:
+> ```bash
+> helm template demo . --set mongo.enabled=false | grep -i mongo
+> ```
 >
-> **Local image note (minikube/kind):** add `--set image.repository=movie-api --set image.tag=1.0 --set image.pullPolicy=Never` if you loaded the image locally instead of pushing to Docker Hub.
+> **Local image note (minikube/kind):** if you built the image locally instead of pushing to Docker Hub, add these to your `install`/`upgrade`/`template` commands so Kubernetes uses the local image:
+> ```bash
+> --set image.repository=movie-api --set image.tag=1.0 --set image.pullPolicy=Never
+> ```
 
 ---
 
