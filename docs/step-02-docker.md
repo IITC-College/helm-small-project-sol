@@ -57,8 +57,9 @@ uvicorn app.main:app --host 0.0.0.0 --port ${PORT}
 
 ---
 
-## D. Run the image against a MongoDB container
+## D. Run the image against a MongoDB container 
 
+*DELETE the older container from step 1 before*
 The API container and the Mongo container must be able to find each other by name. On a **user-defined Docker network**, container names resolve as hostnames.
 
 **Tasks (work out the exact commands):**
