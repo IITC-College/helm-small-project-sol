@@ -133,7 +133,7 @@ Functions you'll call (all built into Helm):
 *Reference answer: `solved/step-05/movie-chart/templates/_helpers.tpl`.*
 
 ## E. `templates/configmap.yaml`
-
+[![Watch the video](https://youtube.com)](https://www.youtube.com/watch?v=KclBNefsYP8)
 **Goal:** turn every key under `.Values.config` into a ConfigMap entry.
 
 - Name it `{{ include "movie-chart.fullname" . }}-config`.
