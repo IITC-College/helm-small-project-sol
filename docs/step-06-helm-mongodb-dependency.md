@@ -4,7 +4,7 @@
 
 You modify your Step 05 chart yourself from the hints. No copy-paste chart. (Reference answer: `solved/step-06/movie-chart/`.)
 
-> **Set up:** start from a copy of your Step 05 `movie-chart/`.
+> **Set up:** keep working in the same `movie-chart/` from Step 05.
 
 ---
 

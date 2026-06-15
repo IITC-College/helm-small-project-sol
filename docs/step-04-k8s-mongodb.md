@@ -4,7 +4,7 @@
 
 Write the new manifests yourself from the hints. No copy-paste YAML. (Reference answer: `solved/step-04/`.)
 
-> **Set up:** start from a copy of your Step 03 `k8s/` folder (e.g. `cp -r step-03 step-04`). You will reuse `configmap.yaml`, `deployment.yaml`, and `service.yaml` unchanged, edit `secret.yaml`, and add two Mongo manifests.
+> **Set up:** keep working in the same `k8s/` folder from Step 03. You will reuse `configmap.yaml`, `deployment.yaml`, and `service.yaml` unchanged, edit `secret.yaml`, and add two Mongo manifests.
 
 ---
 
